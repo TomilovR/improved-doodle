@@ -17,7 +17,7 @@ SLICE_WIDTH = 1024
 OVERLAP_HEIGHT_RATIO = 0.25
 OVERLAP_WIDTH_RATIO = 0.25
 IMAGE_SIZE = 1024
-CONF_THRESHOLD = 0.4
+CONF_THRESHOLD = 0.3
 IOU_THRESHOLD = 0.5
 
 logging.getLogger().setLevel(logging.WARNING)
@@ -162,38 +162,76 @@ def run_inference(model: YOLO, image_path: str) -> List[Dict]:
 
 
 def calculate_map50(predictions: List[List[Dict]], ground_truths: List[List[Dict]]) -> float:
-    total_tp = 0
-    total_fp = 0
-    total_fn = 0
+    all_predictions = []
+    all_ground_truths = []
     
-    for preds, gts in zip(predictions, ground_truths):
-        matched_gts = set()
-        
+    for img_idx, (preds, gts) in enumerate(zip(predictions, ground_truths)):
         for pred in preds:
-            best_iou = 0
-            best_gt_idx = -1
-            
-            for gt_idx, gt in enumerate(gts):
-                if gt_idx in matched_gts:
-                    continue
+            all_predictions.append({
+                'image_id': img_idx,
+                'bbox': pred['bbox'],
+                'confidence': pred['confidence'],
+                'class': pred['class']
+            })
+        
+        for gt in gts:
+            all_ground_truths.append({
+                'image_id': img_idx,
+                'bbox': gt['bbox'],
+                'class': gt['class']
+            })
+    
+    if not all_predictions or not all_ground_truths:
+        return 0.0
+    
+    all_predictions.sort(key=lambda x: x['confidence'], reverse=True)
+    
+    tp_cumsum = 0
+    fp_cumsum = 0
+    precisions = []
+    recalls = []
+    
+    total_gt = len(all_ground_truths)
+    
+    used_gt = {img_idx: set() for img_idx in range(len(predictions))}
+    
+    for pred in all_predictions:
+        best_iou = 0
+        best_gt_idx = -1
+        image_id = pred['image_id']
+        
+        for gt_idx, gt in enumerate(all_ground_truths):
+            if (gt['image_id'] == image_id and 
+                gt_idx not in used_gt[image_id]):
                 
                 iou = calculate_iou(pred['bbox'], gt['bbox'])
                 if iou > best_iou:
                     best_iou = iou
                     best_gt_idx = gt_idx
-            
-            if best_iou >= 0.5:
-                total_tp += 1
-                matched_gts.add(best_gt_idx)
-            else:
-                total_fp += 1
         
-        total_fn += len(gts) - len(matched_gts)
+        if best_iou >= 0.5:
+            tp_cumsum += 1
+            used_gt[image_id].add(best_gt_idx)
+        else:
+            fp_cumsum += 1
+        
+        precision = tp_cumsum / (tp_cumsum + fp_cumsum)
+        recall = tp_cumsum / total_gt
+        
+        precisions.append(precision)
+        recalls.append(recall)
     
-    precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
-    recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+    recalls = [0] + recalls + [1]
+    precisions = [0] + precisions + [0]
     
-    return precision if precision > 0 else 0
+    for i in range(len(precisions) - 2, -1, -1):
+        precisions[i] = max(precisions[i], precisions[i + 1])
+    
+    ap = 0
+    for i in range(1, len(recalls)):
+        ap += (recalls[i] - recalls[i - 1]) * precisions[i]
+    
+    return ap
 
 
 def measure_map50(model: YOLO, sample_images: List[str]) -> float:
