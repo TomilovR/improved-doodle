@@ -6,7 +6,7 @@
 
 ```bash
 git clone https://github.com/TomilovR/improved-doodle.git
-cd yolo-flops-calculator
+cd .\improved-doodle\
 pip install -r requirements.txt
 ```
 
